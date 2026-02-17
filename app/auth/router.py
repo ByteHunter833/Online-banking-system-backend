@@ -51,3 +51,7 @@ def verify_otp(data: OtpVerifyRequest):
 
     token = create_access_token(user["id"])
     return {"access_token": token}
+@router.get('/health-check')
+async def health_check():
+    return 'OK'
+
