@@ -56,3 +56,14 @@ def clear_otp_code(user_id: str):
         .execute()
     )
     return result.data[0] if result.data else None
+def get_user_by_id(user_id: str):
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("id", user_id)
+        .single()
+        .execute()
+    )
+    return result.data
+
