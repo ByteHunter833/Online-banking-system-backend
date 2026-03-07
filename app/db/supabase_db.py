@@ -1,3 +1,4 @@
+from urllib.request import Request
 from uuid import uuid4
 from app.db.supabase_service import supabase
 
@@ -67,3 +68,31 @@ def get_user_by_id(user_id: str):
     )
     return result.data
 
+def clear_specific_device(user_id: str, device_id: str):
+    """Удаляет конкретную сессию (device_id) для пользователя. Используется в logout."""
+    supabase.table("user_sessions").delete().eq("user_id", user_id).eq("device_id", device_id).execute()
+
+
+def _audit_log(
+    event: str,
+    request: Request,
+    user_id: str | None = None,
+    device_id: str | None = None,
+    details: str | None = None,
+) -> None:
+    """
+    Пишем каждое важное событие в audit_log.
+    В банке это обязательно — для расследования инцидентов.
+    Пишем асинхронно в фоне чтобы не замедлять ответ.
+    """
+    try:
+        supabase.table("audit_log").insert({
+            "event":     event,
+            "user_id":   user_id,
+            "device_id": device_id,
+            "ip_address": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+            "details":   details,
+        }).execute()
+    except Exception:
+        pass  # Аудит не должен ронять основной запрос
