@@ -1,16 +1,20 @@
 backend/
 ├── app/
-│ ├── main.py
+│ ├── api/
+│ │ ├── dependencies/
+│ │ └── routes/
 │ ├── core/
-│ │ ├── config.py
-│ │ ├── security.py
-│ │ └── jwt.py
-│ ├── auth/
-│ │ ├── router.py
-│ │ ├── schemas.py
-│ │ └── service.py
 │ ├── db/
-│ │ └── fake_db.py
-│ └── tests/
-│ └── test_auth.py
+│ ├── models/
+│ ├── repositories/
+│ ├── schemas/
+│ ├── services/
+│ ├── utils/
+│ └── workers/
+├── alembic/
+│ └── versions/
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+├── README.md
 └── requirements.txt
