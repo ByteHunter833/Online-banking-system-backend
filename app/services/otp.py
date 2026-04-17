@@ -33,6 +33,7 @@ class OTPService:
             OTPPurpose.transfer_sensitive: "transfer confirmation",
             OTPPurpose.change_password: "password change",
             OTPPurpose.account_deactivation: "account deactivation",
+            OTPPurpose.auth_challenge: "authentication challenge",
         }
         return f"Your {labels[purpose]} code is {code}. It expires in 5 minutes."
 

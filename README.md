@@ -127,10 +127,15 @@ Important notes:
 5. Rotate refresh tokens with `POST /auth/refresh`.
 6. Revoke the provided refresh token with `POST /auth/logout`.
 
-Sensitive operations such as password change, account deactivation, and large transfers use OTP endpoints:
+Sensitive operations such as password change and account deactivation use OTP endpoints:
 
 - `POST /auth/otp/request`
 - `POST /auth/otp/verify`
+
+Transfers have a dedicated verification step for the UI:
+
+1. `POST /transactions/verify-transfer` with `from_account_id`, `recipient_account_number`, `amount`, optional `description`, and optional `delivery_channel`. The backend validates the draft transfer and sends a 6-digit code.
+2. `POST /transactions/transfer` with the same transfer details, an idempotency key, and `otp_code` to verify and execute the transfer.
 
 ## Database and Security Notes
 
@@ -156,6 +161,7 @@ If `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` are set in `.env`, the app
 - `/users/update`
 - `/accounts/`
 - `/accounts/{id}`
+- `/transactions/verify-transfer`
 - `/transactions/transfer`
 - `/transactions/history`
 - `/transactions/{id}`

@@ -538,7 +538,12 @@ class AuthService:
         payload: OTPRequest,
         request: Request,
     ) -> dict:
-        if payload.purpose in {OTPPurpose.email_verification, OTPPurpose.password_reset, OTPPurpose.auth_challenge}:
+        if payload.purpose in {
+            OTPPurpose.email_verification,
+            OTPPurpose.password_reset,
+            OTPPurpose.auth_challenge,
+            OTPPurpose.transfer_sensitive,
+        }:
             raise ForbiddenException("Use the dedicated flow for this OTP purpose.")
 
         debug_otp, ttl_seconds = await self.otp_service.issue_otp(
@@ -569,7 +574,12 @@ class AuthService:
         payload: OTPVerifyRequest,
         request: Request,
     ) -> dict:
-        if payload.purpose in {OTPPurpose.email_verification, OTPPurpose.password_reset, OTPPurpose.auth_challenge}:
+        if payload.purpose in {
+            OTPPurpose.email_verification,
+            OTPPurpose.password_reset,
+            OTPPurpose.auth_challenge,
+            OTPPurpose.transfer_sensitive,
+        }:
             raise ForbiddenException("Use the dedicated flow for this OTP purpose.")
 
         await self.otp_service.verify_user_otp(

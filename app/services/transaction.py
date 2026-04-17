@@ -15,7 +15,7 @@ from app.repositories.account import AccountRepository
 from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.transaction import TransactionRepository
 from app.schemas.enums import ChallengePurpose, NotificationCategory, OTPPurpose, RiskDecision
-from app.schemas.transaction import TransferRequest
+from app.schemas.transaction import TransferDraft, TransferRequest, TransferVerificationRequest
 from app.services.audit import AuditService
 from app.services.challenge import ChallengeService
 from app.services.fraud import FraudService
@@ -53,32 +53,67 @@ class TransactionService:
         return f"TRX-{now.strftime('%Y%m%d%H%M%S%f')}"
 
     @staticmethod
+    def _normalize_amount(amount: Decimal) -> str:
+        return format(amount.normalize(), "f")
+
+    @classmethod
+    def _transfer_otp_context(cls, payload: TransferDraft) -> dict[str, str]:
+        return {
+            "from_account_id": str(payload.from_account_id),
+            "recipient_account_number": payload.recipient_account_number,
+            "amount": cls._normalize_amount(payload.amount),
+        }
+
+    @staticmethod
     def _reset_daily_amount_if_needed(account) -> None:
         now = datetime.now(timezone.utc)
         if account.last_transfer_reset_at.date() != now.date():
             account.last_transfer_reset_at = now
             account.daily_transferred_amount = Decimal("0.00")
 
+    @staticmethod
+    def _current_daily_transferred_amount(account) -> Decimal:
+        now = datetime.now(timezone.utc)
+        if account.last_transfer_reset_at.date() != now.date():
+            return Decimal("0.00")
+        return Decimal(account.daily_transferred_amount)
+
+    async def _validate_transfer_draft(
+        self,
+        *,
+        current_user: User,
+        payload: TransferDraft,
+        check_balance: bool = False,
+    ) -> None:
+        sender = await self.accounts.get_by_id_for_user(payload.from_account_id, current_user.id)
+        recipient = await self.accounts.get_by_account_number(payload.recipient_account_number)
+        if sender is None:
+            raise NotFoundException("Source account not found.")
+        if recipient is None:
+            raise NotFoundException("Recipient account not found.")
+        if sender.id == recipient.id:
+            raise ConflictException("You cannot transfer money to the same account.")
+
+        if sender.status != "active":
+            raise ForbiddenException("Source account is not active.")
+        if recipient.status != "active":
+            raise ForbiddenException("Recipient account is not active.")
+        if sender.currency != recipient.currency:
+            raise ConflictException("Currency mismatch between the selected accounts.")
+
+        projected_total = self._current_daily_transferred_amount(sender) + payload.amount
+        if projected_total > Decimal(sender.daily_transfer_limit):
+            raise ForbiddenException("Daily transfer limit exceeded.")
+        if check_balance and Decimal(sender.available_balance) < payload.amount:
+            raise ForbiddenException("Insufficient available balance.")
+
     async def _require_transfer_confirmation(
         self,
         *,
         current_user: User,
         payload: TransferRequest,
-        risk_decision: RiskDecision,
     ) -> str | None:
-        requires_step_up = (
-            current_user.mfa_enabled
-            or risk_decision in {RiskDecision.challenge_required, RiskDecision.queue_review}
-            or payload.amount >= settings.sensitive_transfer_threshold
-        )
-        if not requires_step_up:
-            return None
-
-        context = {
-            "from_account_id": str(payload.from_account_id),
-            "recipient_account_number": payload.recipient_account_number,
-            "amount": str(payload.amount),
-        }
+        context = self._transfer_otp_context(payload)
         if payload.challenge_id is not None:
             challenge = await self.challenge_service.require_verified(
                 current_user=current_user,
@@ -93,9 +128,45 @@ class TransactionService:
                 user=current_user,
                 purpose=OTPPurpose.transfer_sensitive,
                 otp_code=payload.otp_code,
+                extra_match=context,
             )
             return None
-        raise ForbiddenException("A verified challenge or legacy OTP code is required for this transfer.")
+        raise ForbiddenException("A transfer verification code is required for this transfer.")
+
+    async def request_transfer_verification(
+        self,
+        *,
+        current_user: User,
+        payload: TransferVerificationRequest,
+        request: Request,
+    ) -> dict:
+        await self._validate_transfer_draft(
+            current_user=current_user,
+            payload=payload,
+            check_balance=True,
+        )
+        debug_otp, ttl_seconds = await self.otp_service.issue_otp(
+            user=current_user,
+            purpose=OTPPurpose.transfer_sensitive,
+            delivery_channel=payload.delivery_channel,
+            extra_data=self._transfer_otp_context(payload),
+        )
+        await self.audit_service.log(
+            request=request,
+            actor=current_user,
+            action="transactions.transfer_verification_requested",
+            resource_type="otp",
+            description="Transfer verification code requested.",
+            extra=self._transfer_otp_context(payload),
+        )
+        await self.db.commit()
+        return {
+            "message": "Transfer verification code sent.",
+            "purpose": OTPPurpose.transfer_sensitive,
+            "expires_in_seconds": ttl_seconds,
+            "delivery_channel": payload.delivery_channel,
+            "debug_otp": debug_otp if settings.debug else None,
+        }
 
     async def transfer(
         self,
@@ -120,22 +191,28 @@ class TransactionService:
                 existing_transaction = await self.transactions.get_by_id(UUID(existing_key.resource_id))
                 if existing_transaction:
                     return existing_transaction
-            raise ConflictException("This transfer request is already being processed.")
-
-        idempotency_key = IdempotencyKey(
-            user_id=current_user.id,
-            operation="transfer",
-            key=idempotency_key_value,
-            request_hash=request_hash,
-            state="processing",
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.idempotency_ttl_hours),
-        )
-        self.idempotency.add(idempotency_key)
-        try:
-            await self.db.flush()
-        except IntegrityError as exc:
-            await self.db.rollback()
-            raise ConflictException("This transfer request is already being processed.") from exc
+            if existing_key.state != "failed":
+                raise ConflictException("This transfer request is already being processed.")
+            existing_key.state = "processing"
+            existing_key.resource_id = None
+            existing_key.response_code = None
+            existing_key.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.idempotency_ttl_hours)
+            idempotency_key = existing_key
+        else:
+            idempotency_key = IdempotencyKey(
+                user_id=current_user.id,
+                operation="transfer",
+                key=idempotency_key_value,
+                request_hash=request_hash,
+                state="processing",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.idempotency_ttl_hours),
+            )
+            self.idempotency.add(idempotency_key)
+            try:
+                await self.db.flush()
+            except IntegrityError as exc:
+                await self.db.rollback()
+                raise ConflictException("This transfer request is already being processed.") from exc
 
         event_payload: dict | None = None
         try:
@@ -170,7 +247,6 @@ class TransactionService:
                 challenge_id = await self._require_transfer_confirmation(
                     current_user=current_user,
                     payload=payload,
-                    risk_decision=risk_decision,
                 )
 
                 transaction = Transaction(

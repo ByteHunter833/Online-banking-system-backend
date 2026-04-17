@@ -8,10 +8,35 @@ from fastapi import APIRouter, Depends, Header, Query, Request, status
 from app.api.dependencies.auth import get_current_user, rate_limit
 from app.api.dependencies.services import get_transaction_service
 from app.schemas.common import PaginatedResponse
-from app.schemas.transaction import TransactionResponse, TransferRequest
+from app.schemas.transaction import (
+    TransactionResponse,
+    TransferRequest,
+    TransferVerificationRequest,
+    TransferVerificationResponse,
+)
 from app.services.transaction import TransactionService
 
 router = APIRouter(prefix="/transactions", tags=["Transactions"])
+
+
+@router.post(
+    "/verify-transfer",
+    response_model=TransferVerificationResponse,
+    dependencies=[
+        Depends(rate_limit("transactions-verify-transfer", limit=3, window_seconds=600, key_strategy="user"))
+    ],
+)
+async def request_transfer_verification(
+    payload: TransferVerificationRequest,
+    request: Request,
+    current_user=Depends(get_current_user),
+    transaction_service: TransactionService = Depends(get_transaction_service),
+):
+    return await transaction_service.request_transfer_verification(
+        current_user=current_user,
+        payload=payload,
+        request=request,
+    )
 
 
 @router.post(
